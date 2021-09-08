@@ -4,14 +4,14 @@
   "main": "lib/vacation-biz-ui.umd.js",
   "types": "lib/index.d.ts",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --config vite.app.config.ts --host",
     "build": "npm run build:lib & npm run build:app",
     "build:lib": "vite build --config vite.lib.config.ts & npm run compile:lib",
     "compile:lib": "tsc -b tsconfig.lib.json",
     "build:app": "vite build --config vite.app.config.ts",
     "prebuild": "rimraf lib dist",
     "serve": "vite preview",
-    "run": "ts-node src/rx-state.ts"
+    "run": "ts-node src/remesh"
   },
   "peerDependencies": {
     "react": "^17.0.0",
