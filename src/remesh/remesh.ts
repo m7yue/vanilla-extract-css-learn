@@ -1,193 +1,318 @@
-import {
-  Observable,
-  Subject,
-  Subscription,
-  Observer,
-  combineLatest,
-  of,
-} from 'rxjs';
+import { Observable, Subject, Subscription, Observer } from 'rxjs';
 
-import { shareReplay, startWith } from 'rxjs/operators';
+import { distinctUntilChanged, shareReplay, tap } from 'rxjs/operators';
 
-export type TaskBasicContext = {
-  get: <T extends Task<any, any>>(Task: T) => Observable<TaskOutput<T>>;
-  getInput: <T extends Task<any, any>>(Task: T) => Observable<TaskInput<T>>;
-  emit: <T extends Task<any, any>>(Task: T, value: TaskInput<T>) => void;
-};
-
-export type TaskPreloadContext<I, O> = {
-  preloadedInputValue?: I;
-  preloadedOutputValue?: O;
-};
-
-export type TaskPreload<I = unknown, O = unknown> = TaskPreloadContext<I, O> & {
-  Task: Task<I, O>;
-};
-
-export type TaskContext<I, O> = TaskBasicContext & TaskPreloadContext<I, O>;
-
-export type Task<I = unknown, O = unknown> = {
-  kind: 'Task';
-  name: string;
-  task: (input$: Observable<I>, context: TaskContext<I, O>) => Observable<O>;
-  preload: (options: { input?: I; output?: O }) => TaskPreload<I, O>;
-};
-
-export type TaskInput<T extends Task> = T extends Task<infer I, any>
-  ? I
-  : never;
-
-export type TaskOutput<T extends Task> = T extends Task<any, infer O>
-  ? O
-  : never;
-
-export type TaskOptions<I, O> = {
-  name: string;
-  task: Task<I, O>['task'];
-};
-
-export type AtomOptions<I> = {
-  name: string;
-  startValue: I;
-};
-
-export type Atom<I> = Task<I, I>;
-
-export type SelectorGetterContext = {
-  get: TaskBasicContext['get'];
-  getInput: TaskBasicContext['getInput'];
-};
-
-export type SelectorOptions<O> = {
-  name: string;
-  get: (context: SelectorGetterContext) => Observable<O>;
-};
-
-export type Selector<O> = Task<void, O>;
+import shallowEqual from 'shallowequal';
 
 export const Remesh = {
-  task: <I, O>(options: TaskOptions<I, O>): Task<I, O> => {
-    const Task: Task<I, O> = {
-      kind: 'Task',
-      name: options.name,
-      task: options.task,
-      preload: (options): TaskPreload<I, O> => {
-        return {
-          preloadedInputValue: options.input,
-          preloadedOutputValue: options.output,
-          Task,
-        };
-      },
-    };
-    return Task;
+  get atom() {
+    return RemeshAtom;
   },
-  atom: <I>(options: AtomOptions<I>): Atom<I> => {
-    return Remesh.task({
-      name: options.name,
-      task: (input$) => {
-        return input$.pipe(startWith(options.startValue));
-      },
-    });
+  get pack() {
+    return RemeshPack;
   },
-  selector: <O>(options: SelectorOptions<O>): Selector<O> => {
-    return Remesh.task({
-      name: options.name,
-      task: (_, context) => {
-        return options.get({
-          get: context.get,
-          getInput: context.getInput,
-        });
-      },
-    });
+  get stream() {
+    return RemeshStream;
   },
   get store() {
-    return createStore;
+    return RemeshStore;
   },
 };
 
-export type TaskStore = ReturnType<typeof createStore>;
-
-export type TaskStoreOptions = {
-  preloaded?: TaskPreload<any, any>[];
+export type RemeshContext = {
+  get: <T>(Node: RemeshNode<T>) => Observable<T>;
+  getValue: <T>(Node: RemeshNode<T>) => T;
+  emit: <T>(Atom: RemeshAtom<T>, value: T) => void;
+  emitError: <T>(Atom: RemeshAtom<T>, error: Error) => void;
 };
 
-export const createStore = (options?: TaskStoreOptions) => {
+export type StartValue<T extends RemeshNode<any> = RemeshNode<unknown>> = {
+  type: 'StartValue';
+  RemeshNode: T;
+  value: RemeshNodeValue<T>;
+};
+
+export type RemeshAtom<T = unknown> = {
+  type: 'RemeshAtom';
+  name?: string;
+  startValue: T;
+  startWith: (value: T) => StartValue<RemeshNode<T>>;
+};
+
+export type RemeshPackContext<T> = RemeshContext & {
+  startValue: T;
+};
+
+export type RemeshPack<T = unknown> = {
+  type: 'RemeshPack';
+  name?: string;
+  startValue: T;
+  impl: ($: RemeshPackContext<T>) => Observable<T>;
+  startWith: (value: T) => StartValue<RemeshPack<T>>;
+};
+
+export type RemeshNode<T = unknown> = RemeshAtom<T> | RemeshPack<T>;
+
+export type RemeshNodeValue<T extends RemeshNode> = T extends RemeshNode<
+  infer U
+>
+  ? U
+  : never;
+
+export type RemeshAtomOptions<T> = {
+  name?: RemeshNode<T>['name'];
+  startValue: RemeshNode<T>['startValue'];
+};
+
+export const RemeshAtom = <T>(options: RemeshAtomOptions<T>): RemeshAtom<T> => {
+  const Atom: RemeshNode<T> = {
+    ...options,
+    type: 'RemeshAtom',
+    startWith: (value) => {
+      return {
+        type: 'StartValue',
+        RemeshNode: Atom,
+        value: value,
+      };
+    },
+  };
+
+  return Atom;
+};
+
+export type RemeshPackOptions<T> = {
+  name?: RemeshPack<T>['name'];
+  startValue: RemeshPack<T>['startValue'];
+  impl: RemeshPack<T>['impl'];
+};
+
+export const RemeshPack = <T>(options: RemeshPackOptions<T>): RemeshPack<T> => {
+  const Pack: RemeshPack<T> = {
+    ...options,
+    type: 'RemeshPack',
+    startWith: (value) => {
+      return {
+        type: 'StartValue',
+        RemeshNode: Pack,
+        value: value,
+      };
+    },
+  };
+
+  return Pack;
+};
+
+export type RemeshStreamStartValue<I, O> = {
+  input: I;
+  output: O;
+};
+
+export type RemeshStreamContext<I, O> = RemeshContext & {
+  startValue: RemeshStreamStartValue<I, O>;
+};
+
+export type RemeshStream<I, O> = {
+  type: 'RemeshStream';
+  name?: string;
+  startValue: RemeshStreamStartValue<I, O>;
+  impl: (input$: Observable<I>, $: RemeshStreamContext<I, O>) => Observable<O>;
+  Input: RemeshAtom<I>;
+  Output: RemeshPack<O>;
+};
+
+export type RemeshStreamOptions<I, O> = {
+  name?: RemeshStream<I, O>['name'];
+  startValue: RemeshStream<I, O>['startValue'];
+  impl: RemeshStream<I, O>['impl'];
+};
+
+export const RemeshStream = function <I, O>(
+  options: RemeshStreamOptions<I, O>
+): RemeshStream<I, O> {
+  const Input: RemeshStream<I, O>['Input'] = RemeshAtom({
+    name: options.name !== undefined ? `Input(${options.name})` : undefined,
+    startValue: options.startValue.input,
+  });
+
+  const Output: RemeshStream<I, O>['Output'] = RemeshPack({
+    name: options.name !== undefined ? `Output(${options.name})` : undefined,
+    startValue: options.startValue.output,
+    impl: ($) => {
+      const input$ = $.get(Input);
+      const startValue = {
+        input: $.getValue(Input),
+        output: $.startValue,
+      };
+      const remeshStreamContext: RemeshStreamContext<I, O> = {
+        ...$,
+        startValue,
+      };
+
+      return options.impl(input$, remeshStreamContext);
+    },
+  });
+
+  return {
+    ...options,
+    type: 'RemeshStream',
+    Input,
+    Output,
+  };
+};
+
+export type RemeshStoreOptions = {
+  startValues?: StartValue<RemeshNode<any>>[];
+};
+
+type RemeshAtomStorage<T = unknown> = {
+  subject: Subject<T>;
+  observable: Observable<T>;
+  value: T;
+};
+
+type RemeshPackStorage<T = unknown> = {
+  observable: Observable<T>;
+  value: T;
+};
+
+export type RemeshStore = ReturnType<typeof RemeshStore>;
+
+export const RemeshStore = (options?: RemeshStoreOptions) => {
   const storage = {
-    subject: {
-      input: new Map<Task<any, any>, Subject<any>>(),
-    },
-    observable: {
-      input: new Map<Task<any, any>, Observable<any>>(),
-      output: new Map<Task<any, any>, Observable<any>>(),
-    },
+    atom: new Map<RemeshNode<any>, RemeshAtomStorage<any>>(),
+    pack: new Map<RemeshNode<any>, RemeshPackStorage<any>>(),
     subscription: new Set<Subscription>(),
   };
 
-  const getPreloaded = <I, O>(
-    Task: Task<I, O>
-  ): TaskPreload<I, O> | undefined => {
-    if (!options?.preloaded) {
-      return;
+  const getStartValue = <T>(Node: RemeshNode<T>) => {
+    if (!options?.startValues) {
+      return Node.startValue;
     }
 
-    for (const preloaded of options.preloaded) {
-      if (preloaded.Task === Task) {
-        return preloaded as TaskPreload<I, O>;
+    for (const startValue of options.startValues) {
+      if (startValue.RemeshNode === Node) {
+        return startValue.value as T;
       }
     }
+
+    return Node.startValue;
   };
 
-  const getTaskStore = <I, O>(Task: Task<I, O>) => {
-    let inputSubject = storage.subject.input.get(Task);
-    let input$ = storage.observable.input.get(Task);
-    let output$ = storage.observable.output.get(Task);
+  const getAtomStorage = <T>(Atom: RemeshAtom<T>): RemeshAtomStorage<T> => {
+    let atomStorage = storage.atom.get(Atom);
 
-    if (!inputSubject || !input$ || !output$) {
-      const preloaded = getPreloaded(Task);
-
-      inputSubject = new Subject<I>();
-      input$ = inputSubject.asObservable();
-      output$ = Task.task(input$, {
-        ...taskContext,
-        preloadedInputValue: preloaded?.preloadedInputValue,
-        preloadedOutputValue: preloaded?.preloadedOutputValue,
-      }).pipe(
+    if (!atomStorage) {
+      const startValue = getStartValue(Atom);
+      const subject = new Subject<T>();
+      const observable = subject.pipe(
+        tap({
+          next: (newValue) => {
+            currentAtomStorage.value = newValue;
+          },
+          complete: () => {
+            currentAtomStorage.value = startValue;
+          },
+          error: () => {
+            currentAtomStorage.value = startValue;
+          },
+        }),
         shareReplay({
           bufferSize: 1,
           refCount: true,
         })
       );
 
-      storage.subject.input.set(Task, inputSubject);
-      storage.observable.input.set(Task, input$);
-      storage.observable.output.set(Task, output$);
+      const currentAtomStorage: RemeshAtomStorage<T> = {
+        subject,
+        observable,
+        value: startValue,
+      };
+
+      atomStorage = currentAtomStorage;
+      storage.atom.set(Atom, atomStorage);
     }
 
-    return {
-      inputSubject,
-      input$,
-      output$,
-    };
+    return atomStorage;
   };
 
-  const taskContext: TaskBasicContext = {
-    get: (Task) => {
-      return getTaskStore(Task).output$;
+  const getPackStorage = <T>(Pack: RemeshPack<T>): RemeshPackStorage<T> => {
+    let packStorage = storage.pack.get(Pack);
+
+    if (!packStorage) {
+      const startValue = getStartValue(Pack);
+      const remeshPackContext: RemeshPackContext<T> = {
+        ...remeshContext,
+        startValue,
+      };
+      const observable = Pack.impl(remeshPackContext).pipe(
+        tap({
+          next: (newValue) => {
+            currentPackStorage.value = newValue;
+          },
+          error: () => {
+            currentPackStorage.value = startValue;
+          },
+          complete: () => {
+            currentPackStorage.value = startValue;
+          },
+        }),
+        shareReplay({
+          bufferSize: 1,
+          refCount: true,
+        })
+      );
+
+      const currentPackStorage: RemeshPackStorage<T> = {
+        observable,
+        value: startValue,
+      };
+
+      packStorage = currentPackStorage;
+      storage.pack.set(Pack, packStorage);
+    }
+
+    return packStorage;
+  };
+
+  const remeshContext: RemeshContext = {
+    get: (Node) => {
+      if (Node.type === 'RemeshAtom') {
+        return getAtomStorage(Node).observable;
+      }
+
+      if (Node.type === 'RemeshPack') {
+        return getPackStorage(Node).observable;
+      }
+
+      throw new Error(`Unknown Node in $.get(Node): ${Node}`);
     },
-    getInput: (Task) => {
-      return getTaskStore(Task).input$;
+    getValue: (Node) => {
+      if (Node.type === 'RemeshAtom') {
+        return getAtomStorage(Node).value;
+      }
+
+      if (Node.type === 'RemeshPack') {
+        return getPackStorage(Node).value;
+      }
+
+      throw new Error(`Unknown Node in $.get(Node): ${Node}`);
     },
-    emit: (Task, input) => {
-      getTaskStore(Task).inputSubject.next(input);
+    emit: (Atom, value) => {
+      getAtomStorage(Atom).subject.next(value);
+    },
+    emitError: (Atom, error) => {
+      getAtomStorage(Atom).subject.error(error);
     },
   };
 
-  const subscribe = <I, O>(
-    Task: Task<I, O>,
-    observer: Partial<Observer<O>>
+  const subscribe = <T>(
+    Node: RemeshNode<T>,
+    observer: Partial<Observer<T>>
   ): Subscription => {
-    const observable = getTaskStore(Task).output$ as Observable<O>;
-    const subscription = observable.subscribe(observer);
+    const observable = remeshContext.get(Node);
+    const subscription = observable
+      .pipe(distinctUntilChanged(shallowEqual))
+      .subscribe(observer);
 
     storage.subscription.add(subscription);
 
@@ -205,7 +330,7 @@ export const createStore = (options?: TaskStoreOptions) => {
   };
 
   return {
-    ...taskContext,
+    ...remeshContext,
     subscribe,
     unsubscribeAll,
   };

@@ -8,26 +8,26 @@ import React, {
   useState,
 } from 'react';
 
-import { Observer } from 'rxjs';
-import { TaskInput } from '.';
-
 import {
-  Remesh,
-  Task,
-  TaskStore,
-  TaskBasicContext,
-  TaskOutput,
-  TaskStoreOptions,
+  RemeshAtom,
+  RemeshNode,
+  RemeshStream,
+  RemeshStore,
+  RemeshStoreOptions,
 } from './remesh';
 
-export type ReactTaskContext = {
-  taskStore: TaskStore;
+const noop = () => {};
+
+export type RemeshReactContext = {
+  remeshStore: RemeshStore;
 };
 
-export const ReactTaskContext = createContext<ReactTaskContext | null>(null);
+export const RemeshReactContext = createContext<RemeshReactContext | null>(
+  null
+);
 
-export const useTaskContext = () => {
-  const context = useContext(ReactTaskContext);
+export const useRemeshReactContext = () => {
+  const context = useContext(RemeshReactContext);
 
   if (context === null) {
     throw new Error(`You may forgot to add <RemeshRoot />`);
@@ -36,85 +36,128 @@ export const useTaskContext = () => {
   return context;
 };
 
+export const useRemeshStore = () => {
+  const context = useRemeshReactContext();
+  return context.remeshStore;
+};
+
 export type RemeshRootProps = {
   children: ReactNode;
-  options?: TaskStoreOptions;
+  options?: RemeshStoreOptions;
 };
 
 export const RemeshRoot = (props: RemeshRootProps) => {
-  const taskContextRef = useRef<ReactTaskContext | null>(null);
+  const taskContextRef = useRef<RemeshReactContext | null>(null);
 
   if (taskContextRef.current === null) {
     taskContextRef.current = {
-      taskStore: Remesh.store(props.options),
+      remeshStore: RemeshStore(props.options),
     };
   }
 
   useEffect(() => {
     return () => {
-      taskContextRef.current?.taskStore.unsubscribeAll();
+      taskContextRef.current?.remeshStore.unsubscribeAll();
     };
   }, []);
 
   return (
-    <ReactTaskContext.Provider value={taskContextRef.current}>
+    <RemeshReactContext.Provider value={taskContextRef.current}>
       {props.children}
-    </ReactTaskContext.Provider>
+    </RemeshReactContext.Provider>
   );
 };
 
-export const useRemeshTask = <I, O>(
-  Task: Task<I, O>,
-  observer?: Partial<Observer<O>>
-) => {
-  const taskContext = useTaskContext();
+export const useRemeshValueCallback = function <T>(
+  Node: RemeshNode<T>,
+  valueHandler: (value: T) => unknown
+) {
+  const remeshStore = useRemeshStore();
 
-  const observerRef = useRef<typeof observer>(observer);
+  const valueHandlerRef = useRef(valueHandler);
 
   useEffect(() => {
-    observerRef.current = observer;
+    valueHandlerRef.current = valueHandler;
   });
 
   useEffect(() => {
-    const subscription = taskContext.taskStore.subscribe(Task, {
-      next: (data) => observerRef.current?.next?.(data),
-      error: (error) => observerRef.current?.error?.(error),
-      complete: () => observerRef.current?.complete?.(),
+    const subscription = remeshStore.subscribe(Node, {
+      next: (newValue) => {
+        valueHandlerRef.current(newValue);
+      },
     });
-
     return () => {
       subscription.unsubscribe();
     };
-  }, []);
+  }, [Node, remeshStore]);
 };
 
-export const useRemeshValue = <I, O>(Task: Task<I, O>, initialState: O) => {
-  const [value, setValue] = useState<O>(initialState);
+export const useRemeshValue = function <T>(Node: RemeshNode<T>) {
+  const remeshStore = useRemeshStore();
+  const [value, setValue] = useState(() => remeshStore.getValue(Node));
 
-  useRemeshTask(Task, { next: setValue });
+  useRemeshValueCallback(Node, setValue);
 
   return value;
 };
 
-export type TaskEmitter<T extends Task> = (value: TaskInput<T>) => void;
+export const useRemeshNode = function <T>(Node: RemeshNode<T>) {
+  useRemeshValueCallback(Node, noop);
+};
 
-export const useRemeshEmitter = <T extends Task<any, any>>(
-  Task: T
-): TaskEmitter<T> => {
-  const taskContext = useTaskContext();
+export const useRemeshErrorCallback = function <T>(
+  Node: RemeshNode<T>,
+  errorHandler: (error: Error) => unknown
+) {
+  const remeshStore = useRemeshStore();
 
-  const emitter = useMemo((): TaskEmitter<T> => {
-    return (value) => {
-      taskContext.taskStore.emit(Task, value);
+  const errorHandlerRef = useRef(errorHandler);
+
+  useEffect(() => {
+    errorHandlerRef.current = errorHandler;
+  });
+
+  useEffect(() => {
+    const subscription = remeshStore.subscribe(Node, {
+      error: (error) => {
+        errorHandlerRef.current(error);
+      },
+    });
+    return () => {
+      subscription.unsubscribe();
     };
-  }, [Task, taskContext]);
+  }, [Node, remeshStore]);
+};
+
+export type RemeshEmitter<T> = {
+  emit: (value: T) => void;
+  emitError: (error: Error) => void;
+};
+
+export const useRemeshEmitter = function <T>(
+  Atom: RemeshAtom<T>
+): RemeshEmitter<T> {
+  const remeshStore = useRemeshStore();
+
+  const emitter = useMemo((): RemeshEmitter<T> => {
+    return {
+      emit: (value) => {
+        remeshStore.emit(Atom, value);
+      },
+      emitError: (error) => {
+        remeshStore.emitError(Atom, error);
+      },
+    };
+  }, [Atom, remeshStore]);
 
   return emitter;
 };
 
-export const useRemeshState = <I, O>(Task: Task<I, O>, initialState: O) => {
-  const state = useRemeshValue(Task, initialState);
-  const emit = useRemeshEmitter(Task);
+export const useRemeshAtom = function <T>(Atom: RemeshAtom<T>) {
+  const state = useRemeshValue(Atom);
+  const emitter = useRemeshEmitter(Atom);
 
-  return [state, emit] as const;
+  return [state, emitter] as const;
 };
+
+export const useRemeshStream = function <I, O>(Stream: RemeshStream<I, O>) {};
