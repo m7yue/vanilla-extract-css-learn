@@ -179,9 +179,9 @@ export type RemeshStore = ReturnType<typeof RemeshStore>;
 
 export const RemeshStore = (options?: RemeshStoreOptions) => {
   const storage = {
-    atom: new Map<RemeshNode<any>, RemeshAtomStorage<any>>(),
-    pack: new Map<RemeshNode<any>, RemeshPackStorage<any>>(),
-    subscription: new Set<Subscription>(),
+    atom: new Map<RemeshAtom<any>, RemeshAtomStorage<any>>(),
+    pack: new Map<RemeshPack<any>, RemeshPackStorage<any>>(),
+    subscription: new Map<RemeshNode<any>, Set<Subscription>>(),
   };
 
   const getStartValue = <T>(Node: RemeshNode<T>) => {
@@ -305,27 +305,71 @@ export const RemeshStore = (options?: RemeshStoreOptions) => {
     },
   };
 
+  const getSubscriptionSet = <T>(Node: RemeshNode<T>): Set<Subscription> => {
+    let subscriptionSet = storage.subscription.get(Node);
+
+    if (!subscriptionSet) {
+      subscriptionSet = new Set();
+      storage.subscription.set(Node, subscriptionSet);
+    }
+
+    return subscriptionSet;
+  };
+
+  const clearNode = <T>(Node: RemeshNode<T>) => {
+    const subscriptionSet = getSubscriptionSet(Node);
+
+    if (Node.type === 'RemeshAtom') {
+      storage.atom.delete(Node);
+    } else if (Node.type === 'RemeshPack') {
+      storage.pack.delete(Node);
+    }
+
+    for (const subscription of subscriptionSet) {
+      subscription.unsubscribe();
+    }
+  };
+
   const subscribe = <T>(
     Node: RemeshNode<T>,
     observer: Partial<Observer<T>>
   ): Subscription => {
     const observable = remeshContext.get(Node);
+
+    /**
+     * Only trigger next value when changed
+     */
     const subscription = observable
       .pipe(distinctUntilChanged(shallowEqual))
       .subscribe(observer);
 
-    storage.subscription.add(subscription);
+    const subscriptionSet = getSubscriptionSet(Node);
+
+    subscriptionSet.add(subscription);
 
     subscription.add(() => {
-      storage.subscription.delete(subscription);
+      const subscriptionSet = getSubscriptionSet(Node);
+
+      subscriptionSet.delete(subscription);
+
+      /**
+       * clear subscription set if no subscription left
+       */
+      if (subscriptionSet.size === 0) {
+        clearNode(Node);
+      }
     });
 
     return subscription;
   };
 
   const unsubscribeAll = () => {
-    for (const subscription of storage.subscription) {
-      subscription.unsubscribe();
+    for (const Atom of storage.atom.keys()) {
+      clearNode(Atom);
+    }
+
+    for (const Pack of storage.pack.keys()) {
+      clearNode(Pack);
     }
   };
 
