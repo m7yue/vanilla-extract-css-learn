@@ -4,19 +4,12 @@ import React, {
   useContext,
   createContext,
   ReactNode,
-  useMemo,
   useState,
+  useMemo,
 } from 'react';
+import { RemeshEffect } from '.';
 
-import {
-  RemeshAtom,
-  RemeshNode,
-  RemeshStream,
-  RemeshStore,
-  RemeshStoreOptions,
-} from './remesh';
-
-const noop = () => {};
+import { RemeshNode, RemeshStore, RemeshStoreOptions } from './remesh';
 
 export type RemeshReactContext = {
   remeshStore: RemeshStore;
@@ -57,7 +50,7 @@ export const RemeshRoot = (props: RemeshRootProps) => {
 
   useEffect(() => {
     return () => {
-      taskContextRef.current?.remeshStore.unsubscribeAll();
+      taskContextRef.current?.remeshStore.clear();
     };
   }, []);
 
@@ -94,70 +87,37 @@ export const useRemeshValueCallback = function <T>(
 
 export const useRemeshValue = function <T>(Node: RemeshNode<T>) {
   const remeshStore = useRemeshStore();
-  const [value, setValue] = useState(() => remeshStore.getValue(Node));
+  const [value, setValue] = useState(() => remeshStore.get(Node));
 
   useRemeshValueCallback(Node, setValue);
 
   return value;
 };
 
-export const useRemeshNode = function <T>(Node: RemeshNode<T>) {
-  useRemeshValueCallback(Node, noop);
-};
-
-export const useRemeshErrorCallback = function <T>(
-  Node: RemeshNode<T>,
-  errorHandler: (error: Error) => unknown
-) {
+export const useRemeshEffect = function (Effect: RemeshEffect | null) {
   const remeshStore = useRemeshStore();
 
-  const errorHandlerRef = useRef(errorHandler);
-
   useEffect(() => {
-    errorHandlerRef.current = errorHandler;
-  });
+    if (!Effect) {
+      return;
+    }
 
-  useEffect(() => {
-    const subscription = remeshStore.subscribe(Node, {
-      error: (error) => {
-        errorHandlerRef.current(error);
-      },
-    });
+    const subscription = remeshStore.performEffect(Effect);
+
     return () => {
       subscription.unsubscribe();
     };
-  }, [Node, remeshStore]);
+  }, [remeshStore, Effect]);
 };
 
-export type RemeshEmitter<T> = {
-  emit: (value: T) => void;
-  emitError: (error: Error) => void;
-};
-
-export const useRemeshEmitter = function <T>(
-  Atom: RemeshAtom<T>
-): RemeshEmitter<T> {
+export const useRemeshEmitter = function () {
   const remeshStore = useRemeshStore();
 
-  const emitter = useMemo((): RemeshEmitter<T> => {
+  const emitter = useMemo(() => {
     return {
-      emit: (value) => {
-        remeshStore.emit(Atom, value);
-      },
-      emitError: (error) => {
-        remeshStore.emitError(Atom, error);
-      },
+      emit: remeshStore.emit,
     };
-  }, [Atom, remeshStore]);
+  }, [remeshStore]);
 
   return emitter;
 };
-
-export const useRemeshAtom = function <T>(Atom: RemeshAtom<T>) {
-  const state = useRemeshValue(Atom);
-  const emitter = useRemeshEmitter(Atom);
-
-  return [state, emitter] as const;
-};
-
-export const useRemeshStream = function <I, O>(Stream: RemeshStream<I, O>) {};

@@ -9,10 +9,10 @@ import { map, switchMap, scan, tap, filter, startWith } from 'rxjs/operators';
 import { Remesh } from './remesh';
 
 import {
-  useRemeshEmitter,
   RemeshRoot,
   useRemeshValue,
-  useRemeshNode,
+  useRemeshEffect,
+  useRemeshEmitter,
 } from './remesh/react';
 
 let todoUid = 0;
@@ -23,176 +23,83 @@ type Todo = {
   completed: boolean;
 };
 
-type AddTodo = {
-  type: 'AddTodo';
-  content: string;
-};
-
-type RemoveTodo = {
-  type: 'RemoveTodo';
-  todoId: number;
-};
-
-type UpdateTodoContent = {
-  type: 'UpdateTodoContent';
-  todoId: number;
-  content: string;
-};
-
-type ToggleTodoStatus = {
-  type: 'ToggleTodoStatus';
-  todoId: number;
-};
-
-type DefaultTodoAction = {
-  type: 'DefaultTodoAction';
-};
-
-type TodoAction =
-  | DefaultTodoAction
-  | AddTodo
-  | RemoveTodo
-  | UpdateTodoContent
-  | ToggleTodoStatus;
-
-const Todos = Remesh.stream<TodoAction, Todo[]>({
-  startValue: {
-    input: {
-      type: 'DefaultTodoAction',
-    },
-    output: [] as Todo[],
-  },
-  impl: (action$, { startValue }) => {
-    const reducer = (todos: Todo[], action: TodoAction): Todo[] => {
-      if (action.type === 'AddTodo') {
-        const newTodo: Todo = {
-          id: todoUid++,
-          content: action.content,
-          completed: false,
-        };
-        return [...todos, newTodo];
-      }
-
-      if (action.type === 'RemoveTodo') {
-        return todos.filter((todo) => todo.id !== action.todoId);
-      }
-
-      if (action.type === 'ToggleTodoStatus') {
-        return todos.map((todo) => {
-          if (todo.id !== action.todoId) return todo;
-          return {
-            ...todo,
-            completed: !todo.completed,
-          };
-        });
-      }
-
-      if (action.type === 'UpdateTodoContent') {
-        return todos.map((todo) => {
-          if (todo.id !== action.todoId) return todo;
-          return {
-            ...todo,
-            content: action.content,
-          };
-        });
-      }
-
-      return todos;
+const Todos = Remesh.atom<Todo[]>({
+  defaultValue: [],
+}).reducers({
+  addTodo: (todos: Todo[], content: string) => {
+    const newTodo: Todo = {
+      id: todoUid++,
+      content,
+      completed: false,
     };
-
-    return action$.pipe(scan(reducer, startValue.output));
+    return [...todos, newTodo];
   },
-});
-
-const TodoActionHistory = Remesh.pack<TodoAction[]>({
-  startValue: [],
-  impl: ({ get }) => {
-    return get(Todos.Input).pipe(
-      scan((history, action) => [...history, action], [] as TodoAction[])
-    );
+  removeTodo: (todos: Todo[], todoId: number) => {
+    return todos.filter((todo) => todo.id !== todoId);
+  },
+  toggleTodo: (todos: Todo[], todoId: number) => {
+    return todos.map((todo) => {
+      if (todo.id === todoId) {
+        return {
+          ...todo,
+          completed: !todo.completed,
+        };
+      }
+      return todo;
+    });
+  },
+  clearAllCompleted: (todos: Todo[]) => {
+    return todos.filter((todo) => !todo.completed);
   },
 });
 
 type TodoFilter = 'All' | 'Active' | 'Completed';
 
 const TodoFilter = Remesh.atom<TodoFilter>({
-  startValue: 'All',
+  defaultValue: 'All',
 });
 
 const FilteredTodoList = Remesh.pack<Todo[]>({
-  startValue: [],
   impl: ({ get }) => {
-    const input$ = combineLatest({
-      todos: get(Todos.Output),
-      filter: get(TodoFilter),
-    });
+    const todos = get(Todos);
+    const filter = get(TodoFilter);
 
-    return input$.pipe(
-      map(({ todos, filter }) => {
-        if (filter === 'Active') {
-          return todos.filter((todo) => !todo.completed);
-        }
+    if (filter === 'Active') {
+      return todos.filter((todo) => !todo.completed);
+    }
 
-        if (filter === 'Completed') {
-          return todos.filter((todo) => todo.completed);
-        }
+    if (filter === 'Completed') {
+      return todos.filter((todo) => todo.completed);
+    }
 
-        return todos;
-      })
-    );
+    return todos;
   },
 });
 
 type CounterAction = 'incre' | 'decre' | 'reset' | 'noop';
 
-const Counter = Remesh.stream<CounterAction, number>({
-  startValue: {
-    input: 'noop',
-    output: 0,
+const CounterAction = Remesh.atom<CounterAction>({
+  defaultValue: 'noop',
+});
+
+const Counter = Remesh.atom({
+  defaultValue: 0,
+}).reducers({
+  incre: (count: number) => {
+    return count + 1;
   },
-  impl: (action$, { startValue }) => {
-    return action$.pipe(
-      scan((count, action) => {
-        if (action === 'noop') return count;
-        if (action === 'incre') return count + 1;
-        if (action === 'decre') return count - 1;
-        if (action === 'reset') return 0;
-        return count;
-      }, startValue.output)
-    );
+  decre: (count: number) => {
+    return count - 1;
+  },
+  step: (count: number, step = 1) => {
+    return count + step;
+  },
+  reset: () => {
+    return 0;
   },
 });
 
-type User = {
-  id: number;
-  name: string;
-  email: string;
-};
-
-const isNumber = (input: unknown): input is number => {
-  return typeof input === 'number';
-};
-
-const User = Remesh.stream<number | null, User | null>({
-  startValue: {
-    input: null,
-    output: null,
-  },
-  impl: (userId$) => {
-    return userId$.pipe(
-      filter(isNumber),
-      map((userId) => {
-        return {
-          id: userId,
-          name: `user: ${userId}`,
-          email: 'abc',
-        };
-      })
-    );
-  },
-});
-
-type TimerAction =
+type CounterTimerInput =
   | {
       type: 'start';
       period?: number;
@@ -201,60 +108,67 @@ type TimerAction =
       type: 'stop';
     };
 
-const Timer = Remesh.stream<TimerAction, number>({
-  startValue: {
-    input: {
-      type: 'stop',
-    },
-    output: 0,
+const CounterTimerInput = Remesh.atom<CounterTimerInput>({
+  defaultValue: {
+    type: 'stop',
   },
-  impl: (action$, { emit }) => {
-    return action$.pipe(
+}).reducers({
+  start: (_: CounterTimerInput, period = 1000): CounterTimerInput => {
+    return {
+      type: 'start',
+      period,
+    };
+  },
+  stop: (): CounterTimerInput => {
+    return {
+      type: 'stop',
+    };
+  },
+});
+
+const CounterTimer = Remesh.effect({
+  impl: ({ get$ }) => {
+    return get$(CounterTimerInput).pipe(
       switchMap((action) => {
-        if (action.type === 'start') {
-          return interval(action.period ?? 1000).pipe(
-            tap(() => {
-              emit(Counter.Input, 'incre');
-            })
-          );
+        if (action.type === 'stop') {
+          return NEVER;
         }
-        return EMPTY;
+        return interval(action.period ?? 1000).pipe(
+          map(() => {
+            console.log('timer');
+            return Counter.actions.incre();
+          })
+        );
       })
     );
   },
 });
 
 const CounterUI = () => {
-  const count = useRemeshValue(Counter.Output);
-  const counterEmitter = useRemeshEmitter(Counter.Input);
-  const timerEmitter = useRemeshEmitter(Timer.Input);
+  const count = useRemeshValue(Counter);
+  const emitter = useRemeshEmitter();
 
   const handleIncre = () => {
-    counterEmitter.emit('incre');
+    emitter.emit(Counter.actions.incre());
   };
 
   const handleDecre = () => {
-    counterEmitter.emit('decre');
+    emitter.emit(Counter.actions.decre());
   };
 
   const handleReset = () => {
-    counterEmitter.emit('reset');
+    emitter.emit(Counter.actions.reset());
   };
 
   const handleStart = () => {
-    timerEmitter.emit({
-      type: 'start',
-      period: 100,
-    });
+    emitter.emit(CounterTimerInput.actions.start(100));
   };
 
   const handleStop = () => {
-    timerEmitter.emit({
-      type: 'stop',
-    });
+    emitter.emit(CounterTimerInput.actions.stop());
   };
 
-  useRemeshNode(Timer.Output);
+  useRemeshEffect(CounterTimer);
 
   useEffect(() => {
     if (count >= 100) {
@@ -282,7 +196,7 @@ ReactDOM.render(
   <React.StrictMode>
     <RemeshRoot
       options={{
-        startValues: [Counter.Output.startWith(10)],
+        startValues: [Counter.startWith(10)],
       }}
     >
       <div className={exampleStyle}>
